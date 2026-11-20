@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Chirp Receiver -- Live Debug View</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --grid: #2a2f3a;
+        --wave: #4fd1c5;
+        --bin: #63b3ed;
+        --up: #68d391;
+        --down: #fc8181;
+        --amb: #a0aec0;
+        --text: #e2e8f0;
+        --muted: #8892a0;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 18px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--grid);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 16px;
+      }
+      .panel h2 {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin: 0 0 10px;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+      }
+      .status {
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      .status .val {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .badge.up {
+        background: rgba(104, 211, 145, 0.15);
+        color: var(--up);
+      }
+      .badge.down {
+        background: rgba(252, 129, 129, 0.15);
+        color: var(--down);
+      }
+      .badge.amb {
+        background: rgba(160, 174, 192, 0.15);
+        color: var(--amb);
+      }
+      .err {
+        color: var(--down);
+        font-size: 13px;
+      }
+      #waterfallScroll {
+        max-height: 480px;
+        overflow-y: auto;
+        border: 1px solid var(--grid);
+        border-radius: 6px;
+        background: #000;
+      }
+      #waterfallCanvas {
+        display: block;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 8px;
+      }
+      .badge.state {
+        background: rgba(99, 179, 237, 0.15);
+        color: var(--bin);
+      }
+      #logPanel {
+        max-height: 220px;
+        overflow-y: auto;
+        background: #000;
+        border: 1px solid var(--grid);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--amb);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #logPanel .log-line.evt {
+        color: var(--up);
+      }
+      #logPanel .log-line.warn {
+        color: var(--down);
+      }
+      #messageHistory {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 220px;
+        overflow-y: auto;
+      }
+      .msg-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .msg-row .char {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 16px;
+        font-weight: 700;
+        min-width: 1.4em;
+        text-align: center;
+      }
+      .msg-row .hex {
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .msg-row .time {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      #latestMessage {
+        font-size: 34px;
+        font-weight: 700;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        margin-bottom: 10px;
+      }
+      #latestMessage .empty {
+        font-size: 14px;
+        font-weight: 400;
+        color: var(--muted);
+        font-family: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Chirp Receiver &mdash; Live Debug View</h1>
+    <div class="sub">
+      Raw ADC scope, scrolling waterfall, and per-bin correlation, mirrored from
+      the firmware's own decode math. Visualization only &mdash; no decoding
+      happens here. Updates about once a second.
+    </div>
+
+    <div class="status">
+      <div>frame: <span class="val" id="frameCount">-</span></div>
+      <div>r: <span class="val" id="rVal">-</span></div>
+      <div id="callBadge"></div>
+      <div>state: <span class="badge state" id="stateBadge">-</span></div>
+      <div id="errMsg" class="err"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Decoded Message</h2>
+      <div id="latestMessage">
+        <span class="empty">no byte decoded yet</span>
+      </div>
+      <div id="messageHistory"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Firmware Log</h2>
+      <div id="logPanel"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Raw ADC Waveform (most recent capture)</h2>
+      <canvas id="waveCanvas" height="160"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>Waterfall &mdash; newest at top, scroll down to see the past</h2>
+      <div id="waterfallScroll">
+        <canvas id="waterfallCanvas"></canvas>
+      </div>
+      <div class="hint">
+        x-axis: frequency (low&rarr;high, left&rarr;right) &middot; each row =
+        one capture, about 1s apart &middot; color = signal strength
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Per-bin Activity (mean |delta|) vs. rising-ramp template</h2>
+      <canvas id="binCanvas" height="160"></canvas>
+    </div>
+
+    <script>
+      const waveCanvas = document.getElementById("waveCanvas");
+      const binCanvas = document.getElementById("binCanvas");
+      const waterfallCanvas = document.getElementById("waterfallCanvas");
+      const waterfallScroll = document.getElementById("waterfallScroll");
+
+      const POLL_MS = 50;
+      const MAX_WATERFALL_ROWS = 12000; // ~20 min of history at 1s/row
+      const ROW_HEIGHT = 3; // px per row
+
+      let waterfallHistory = []; // newest-first: waterfallHistory[0] is the most recent row
+      let lastFrameCount = -1;
+      let lastLogLineCount = 0;
+      let lastMessageCount = 0;
+
+      const STATE_LABELS = {
+        waiting_for_quiet: "waiting for quiet",
+        listening_for_onset: "listening for onset",
+        frame_start: "frame onset detected",
+        decoding_preamble: "decoding preamble",
+        preamble_ok: "preamble matched",
+        preamble_mismatch: "preamble mismatch",
+        decoding_message: "decoding message",
+        decoded: "decoded",
+        unknown: "-",
+      };
+
+      function classifyLogLine(line) {
+        if (line.startsWith("[!]") || /mismatch/i.test(line)) return "warn";
+        if (line.startsWith("===") || line.startsWith("[ok]")) return "evt";
+        return "";
+      }
+
+      function formatTime(ts) {
+        return new Date(ts * 1000).toLocaleTimeString();
+      }
+
+      // Small perceptually-ordered colormap (dark blue -> teal -> yellow -> red).
+      const STOPS = [
+        [0.0, [8, 8, 30]],
+        [0.25, [30, 60, 130]],
+        [0.5, [30, 150, 140]],
+        [0.75, [230, 200, 40]],
+        [1.0, [230, 40, 40]],
+      ];
+      function colormap(v) {
+        v = Math.max(0, Math.min(1, v));
+        for (let i = 0; i < STOPS.length - 1; i++) {
+          const [p0, c0] = STOPS[i];
+          const [p1, c1] = STOPS[i + 1];
+          if (v >= p0 && v <= p1) {
+            const t = (v - p0) / (p1 - p0 || 1);
+            return [
+              Math.round(c0[0] + (c1[0] - c0[0]) * t),
+              Math.round(c0[1] + (c1[1] - c0[1]) * t),
+              Math.round(c0[2] + (c1[2] - c0[2]) * t),
+            ];
+          }
+        }
+        return STOPS[STOPS.length - 1][1];
+      }
+
+      function fitCanvas(canvas, cssHeight) {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height =
+          (cssHeight !== undefined ? cssHeight : canvas.clientHeight) * dpr;
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return ctx;
+      }
+
+      function drawGrid(ctx, w, h) {
+        ctx.strokeStyle = getComputedStyle(
+          document.documentElement,
+        ).getPropertyValue("--grid");
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+          const y = (h / 4) * i;
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+          ctx.stroke();
+        }
+      }
+
+      function drawLine(ctx, xs, ys, w, h, color) {
+        if (xs.length === 0) return;
+        const xMin = Math.min(...xs),
+          xMax = Math.max(...xs);
+        const yMin = Math.min(...ys),
+          yMax = Math.max(...ys);
+        const xSpan = xMax - xMin || 1;
+        const ySpan = yMax - yMin || 1;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        for (let i = 0; i < xs.length; i++) {
+          const px = ((xs[i] - xMin) / xSpan) * w;
+          const py = h - ((ys[i] - yMin) / ySpan) * h * 0.9 - h * 0.05;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+
+      function drawBars(ctx, values, w, h, colorFn) {
+        const n = values.length;
+        if (n === 0) return;
+        const maxV = Math.max(...values, 1e-6);
+        const barW = (w / n) * 0.7;
+        const gap = w / n;
+        values.forEach((v, i) => {
+          const barH = (v / maxV) * h * 0.85;
+          ctx.fillStyle = colorFn(i);
+          ctx.fillRect(i * gap + (gap - barW) / 2, h - barH, barW, barH);
+        });
+      }
+
+      // Auto-contrast: stretch the colormap between the 2nd and 98th percentile
+      // of everything currently in the waterfall history, so it adapts to
+      // whatever dB range your signal actually sits in instead of clipping
+      // against a guessed fixed range.
+      function computeContrastRange() {
+        const flat = [];
+        // Sampling every few rows/cols is plenty for a percentile estimate and
+        // much cheaper than flattening the whole history every redraw.
+        for (
+          let row = 0;
+          row < waterfallHistory.length;
+          row += Math.max(1, Math.floor(waterfallHistory.length / 200))
+        ) {
+          const r = waterfallHistory[row];
+          for (let col = 0; col < r.length; col += 2) flat.push(r[col]);
+        }
+        if (flat.length === 0) return [0, 1];
+        flat.sort((a, b) => a - b);
+        const lo = flat[Math.floor(flat.length * 0.02)];
+        const hi = flat[Math.floor(flat.length * 0.98)];
+        return [lo, hi === lo ? lo + 1 : hi];
+      }
+
+      // Full redraw of the waterfall from history. At ~1 row/sec and a capped
+      // history length this is cheap even redone every poll -- no need for the
+      // incremental-patch complexity a true realtime waterfall would need.
+      function redrawWaterfall() {
+        const nRows = waterfallHistory.length;
+        if (nRows === 0) return;
+        const nBins = waterfallHistory[0].length;
+        const [lo, hi] = computeContrastRange();
+        const span = hi - lo;
+
+        const off = document.createElement("canvas");
+        off.width = nBins;
+        off.height = nRows;
+        const octx = off.getContext("2d");
+        const img = octx.createImageData(nBins, nRows);
+        for (let row = 0; row < nRows; row++) {
+          const mags = waterfallHistory[row];
+          for (let col = 0; col < nBins; col++) {
+            const norm = (mags[col] - lo) / span;
+            const [r, g, b] = colormap(norm);
+            const idx = (row * nBins + col) * 4;
+            img.data[idx] = r;
+            img.data[idx + 1] = g;
+            img.data[idx + 2] = b;
+            img.data[idx + 3] = 255;
+          }
+        }
+        octx.putImageData(img, 0, 0);
+
+        const wasNearTop = waterfallScroll.scrollTop < ROW_HEIGHT * 2;
+        const prevScrollTop = waterfallScroll.scrollTop;
+
+        const w = waterfallScroll.clientWidth;
+        const h = nRows * ROW_HEIGHT;
+        waterfallCanvas.width = w;
+        waterfallCanvas.height = h;
+        const ctx = waterfallCanvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(off, 0, 0, nBins, nRows, 0, 0, w, h);
+
+        // Keep whatever the user was looking at in view: if they were pinned to
+        // the newest row, stay pinned; otherwise hold their scroll position
+        // steady even though a new row was just inserted above everything.
+        waterfallScroll.scrollTop = wasNearTop ? 0 : prevScrollTop + ROW_HEIGHT;
+      }
+
+      async function poll() {
+        try {
+          const res = await fetch("/api/frame");
+          const data = await res.json();
+
+          document.getElementById("frameCount").textContent = data.frame_count;
+          document.getElementById("rVal").textContent = data.r.toFixed(3);
+          const badge = document.getElementById("callBadge");
+          if (Math.abs(data.r) < 0.2) {
+            badge.innerHTML = '<span class="badge amb">AMBIGUOUS</span>';
+          } else if (data.r > 0) {
+            badge.innerHTML = '<span class="badge up">UP-leaning</span>';
+          } else {
+            badge.innerHTML = '<span class="badge down">DOWN-leaning</span>';
+          }
+          document.getElementById("errMsg").textContent = data.error
+            ? "[warn] " + data.error
+            : "";
+
+          // Decoder state badge
+          document.getElementById("stateBadge").textContent =
+            STATE_LABELS[data.decoder_state] || data.decoder_state || "-";
+
+          // Decoded message: latest + scrolling history. Only decoded_messages
+          // beyond what we've already rendered are new, so append rather than
+          // rebuild the whole list every poll.
+          if (data.decoded_messages && data.decoded_messages.length) {
+            const msgs = data.decoded_messages;
+            const latest = msgs[msgs.length - 1];
+            const displayChar =
+              latest.char && latest.char.trim() ? latest.char : "\u2423"; // open-box for space/unprintable
+            document.getElementById("latestMessage").innerHTML =
+              `'${displayChar}' <span class="hex" style="font-size:16px">(0x${latest.hex})</span> ` +
+              (latest.parity_ok
+                ? '<span class="badge up" style="vertical-align:middle">parity OK</span>'
+                : '<span class="badge down" style="vertical-align:middle">parity MISMATCH</span>');
+
+            if (msgs.length !== lastMessageCount) {
+              const hist = document.getElementById("messageHistory");
+              for (let i = lastMessageCount; i < msgs.length; i++) {
+                const m = msgs[i];
+                const ch = m.char && m.char.trim() ? m.char : "\u2423";
+                const row = document.createElement("div");
+                row.className = "msg-row";
+                row.innerHTML =
+                  `<span class="char">${ch}</span>` +
+                  `<span class="hex">0x${m.hex}</span>` +
+                  `<span class="badge ${m.parity_ok ? "up" : "down"}">${m.parity_ok ? "OK" : "MISMATCH"}</span>` +
+                  `<span class="time">${formatTime(m.ts)}</span>`;
+                hist.prepend(row);
+              }
+              lastMessageCount = msgs.length;
+            }
+          }
+
+          // Firmware log: append only newly-arrived lines, auto-scroll if the
+          // user was already at the bottom.
+          if (data.log_lines && data.log_lines.length !== lastLogLineCount) {
+            const logPanel = document.getElementById("logPanel");
+            const wasAtBottom =
+              logPanel.scrollHeight -
+                logPanel.scrollTop -
+                logPanel.clientHeight <
+              20;
+            const lines = data.log_lines;
+            // The backend buffer is capped, so if it shrank (wrapped) just
+            // rebuild from scratch; otherwise append the new tail.
+            const start =
+              lines.length < lastLogLineCount ? 0 : lastLogLineCount;
+            const frag = document.createDocumentFragment();
+            for (let i = start; i < lines.length; i++) {
+              const div = document.createElement("div");
+              div.className = "log-line " + classifyLogLine(lines[i]);
+              div.textContent = lines[i];
+              frag.appendChild(div);
+            }
+            if (start === 0) logPanel.innerHTML = "";
+            logPanel.appendChild(frag);
+            lastLogLineCount = lines.length;
+            if (wasAtBottom) logPanel.scrollTop = logPanel.scrollHeight;
+          }
+
+          // Waveform
+          {
+            const ctx = fitCanvas(waveCanvas);
+            const w = waveCanvas.clientWidth,
+              h = waveCanvas.clientHeight;
+            ctx.clearRect(0, 0, w, h);
+            drawGrid(ctx, w, h);
+            drawLine(
+              ctx,
+              data.t_ms,
+              data.waveform,
+              w,
+              h,
+              getComputedStyle(document.documentElement).getPropertyValue(
+                "--wave",
+              ),
+            );
+          }
+
+          // Bin activity
+          {
+            const ctx = fitCanvas(binCanvas);
+            const w = binCanvas.clientWidth,
+              h = binCanvas.clientHeight;
+            ctx.clearRect(0, 0, w, h);
+            drawGrid(ctx, w, h);
+            drawBars(ctx, data.bin_activity, w, h, () =>
+              getComputedStyle(document.documentElement).getPropertyValue(
+                "--bin",
+              ),
+            );
+          }
+
+          // Waterfall: only append a new row when the backend actually produced
+          // a new frame (frame_count changed), so re-polling the same frame
+          // doesn't duplicate rows.
+          if (
+            data.waterfall_row &&
+            data.waterfall_row.length &&
+            data.frame_count !== lastFrameCount
+          ) {
+            lastFrameCount = data.frame_count;
+            waterfallHistory.unshift(data.waterfall_row);
+            if (waterfallHistory.length > MAX_WATERFALL_ROWS)
+              waterfallHistory.pop();
+            redrawWaterfall();
+          }
+        } catch (e) {
+          document.getElementById("errMsg").textContent = "fetch failed: " + e;
+        } finally {
+          setTimeout(poll, POLL_MS);
+        }
+      }
+
+      window.addEventListener("resize", () => {
+        redrawWaterfall();
+      });
+      poll();
+    </script>
+  </body>
+</html>
